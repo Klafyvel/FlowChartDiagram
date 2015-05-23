@@ -58,27 +58,21 @@ class Link:
         self.end = end
         self.attach_beg = attach_beg
         self.diagram = diagram
-        print(self.diagram.right)
-        # print(attach_beg)
+        self.points = []
 
-    def get_draw_code(self):
-        print(self.diagram.right)
-
-        nb_step_x = 0
-        nb_step_y = 0
-        points = ""
+    def calc_points(self):
         if self.attach_beg is "bottom":
-
             bx = self.begin.attach['bottom'][0]
             by = self.begin.attach['bottom'][1]
+            step_by = by + self.begin.bottom*13
             ex = self.end.attach['top'][0]
             ey = self.end.attach['top'][1]
+            step_ey = ey - self.end.top*13
             if by > ey:
                 left = self.diagram.get_left()
-                points = "M{},{} L{},{} L{},{} L{},{} L{},{} L{},{}".format(
-                    bx, by, bx, by + 10, left, by + 10, left, ey - 20, ex, ey - 20, ex, ey)
+                self.points = [(bx, by), (bx, step_by), (left, step_by), (left, step_ey), (ex, step_ey), (ex, ey)]
             else:
-                points = "M{},{} L{},{}".format(bx, by, ex, ey)
+                self.points = [(bx,by),(bx,step_by),(ex,step_by),(ex,ey)]
         else:  # i.e. is "right"
             bx = self.begin.attach['right'][0]
             by = self.begin.attach['right'][1]
@@ -86,27 +80,26 @@ class Link:
                 right = self.diagram.get_right()
                 ex = self.end.attach['top'][0]
                 ey = self.end.attach['top'][1]
-                points = "M{},{} L{},{} L{},{} L{},{} L{},{}".format(
-                    bx, by, right, by, right, ey - 20, ex, ey - 20, ex, ey)
+                step_ey = ey - self.end.top*13
+                self.points = [(bx, by), (right, by), (right, step_ey), (ex, step_ey), (ex, ey)]
             else:
                 ex = self.end.attach['left'][0]
                 ey = self.end.attach['left'][1]
-                points = "M{},{} L{},{}".format(bx, by, ex, ey)
+                self.points = [(bx, by), (ex, ey)]
 
-        # if self.orig_attach is 'right' and self.end_attach is 'left':
-        #     pass
-        # if bx is ex:
-        #     nb_step_x = 0
-        #     nb_step_y = 1
-        # if by is ey:
-        #     nb_step_x = 1
-        #     nb_step_y = 0
+    def get_draw_code(self):
+        points = "M{} {} ".format(*self.points[0])
+        for i in self.points[1:]:
+            points += "L{} {} ".format(*i)
         return "<path d='{}' fill='transparent' stroke='#000000' stroke-width='2' style='marker-end: url(#markerArrow);'/>\n".format(points)
 
 
 class Element:
 
     def __init__(self, name, title):
+        self.row = 0
+        self.bottom = 1
+        self.top = 1
         self.positionned = False
         self.name = name
         self.title = title
@@ -277,7 +270,6 @@ class Parser:
                 parsed += self.parse_link(i)
             else:
                 raise ParseError("Ligne {} non reconnue : {}".format(x, i))
-        print("Parsed")
         return parsed
 
     def parse_init(self, init_line):
@@ -320,12 +312,13 @@ class Diagram:
         self.blocks = {}
         self.links = []
         self.start = ""
-        self.rows = []
-        self.larger = 0
+
+        self.rows_block = []
+        self.rows_link = []
+        self.column_size = []
         self.left = 0
         self.right = 0
         self.from_prgm(prgm)
-        print("Diagram created")
 
     def get_left(self):
         self.left -= 10
@@ -338,8 +331,6 @@ class Diagram:
     def from_prgm(self, prgm):
         for i in prgm:
             if i[0] is 'INIT':
-                if self.larger < i[1].width:
-                    self.larger = i[1].width
                 if i[1].block_type() is "start":
                     self.start = i[1].name
                 self.blocks[i[1].name] = i[1]
@@ -347,11 +338,9 @@ class Diagram:
                 self.add_link(*i[1:])
         if self.start is "":
             raise LinkError("Erreur, pas de point d'entrée.")
-        print("Generating positions")
         self.manage_all_pos()
-        print(self.right)
-        print("Generating links")
         self.manage_links()
+        self.calc_pos()
 
     def add_link(self, orig, end):
         if orig[1] is not None:
@@ -380,33 +369,31 @@ class Diagram:
         current = self.blocks[self.start]
         end = False
         row = []
-        x = 0
         y = 0
         while not end:
             row.append(current)
             current.positionned = True
-            current.set_pos((x, y), self.larger)
-            current.calc_attach_pos()
-            x += self.larger + 20
+            if len(self.column_size) < len(row):
+                self.column_size.append(current.width)            
             try:
                 current = self.blocks[current.link['right']]
                 if current.positionned:
                     end = True
             except KeyError:
                 end = True
-            self.right = len(row) * (self.larger + 20)
+            current.row = y
+        self.rows_block.append(list(row))
         while len(row) is not 0:
-            # print(row)
-            y += 70
             row = self.manage_pos(row, y)
-
-            if self.right < len(row) * (self.larger + 20):
-                self.right = len(row) * (self.larger + 20)
-                print(self.right)
+            y += 1
+            self.rows_block.append(list(row))
+        for i in self.rows_block:
+            for j in i:
+                if j:
+                    self.blocks[j.name] = j
 
     def manage_pos(self, precedly, y):
         r = []
-        x = 0
         for i in precedly:
             if i is None:
                 pass
@@ -416,37 +403,68 @@ class Diagram:
                 c = self.blocks[i.link['bottom']]
                 if not c.positionned:
                     c.positionned = True
-                    c.set_pos((x, y), self.larger)
-                    c.calc_attach_pos()
+                    c.row = y
                     r.append(c)
+
+                    if len(self.column_size) < len(r):
+                        self.column_size.append(c.width)
+                    elif self.column_size[len(r)-1] < c.width:
+                        self.column_size[len(r)-1] = c.width    
                     quit = False
                     while not quit:
-                        x += self.larger + 20
                         try:
                             c = self.blocks[c.link['right']]
                         except:
                             break
                         if not c.positionned:
                             c.positionned = True
-                            c.set_pos((x, y), self.larger)
-                            c.calc_attach_pos()
+                            c.row = y
                             r.append(c)
+                            if len(self.column_size) < len(r):
+                                self.column_size.append(c.width)
+                            elif self.column_size[len(r)-1] < c.width:
+                                self.column_size[len(r)-1] = c.width
                         else:
                             quit = True
-
-            x += self.larger + 20
         return r
 
     def manage_links(self):
+        self.rows_link = [list([0,0]) for i in range(len(self.rows_block))]
         links_eq = {
             "right": "left",
             "bottom": "top"
         }
         for b in self.blocks.values():
+            if b.link['bottom'] is not '':
+                self.rows_link[b.row][1] += 1
+                self.rows_link[self.blocks[b.link['bottom']].row][0] += 1
+                b.bottom = self.rows_link[b.row][1] + 1
+                self.blocks[b.link['bottom']].top = self.rows_link[self.blocks[b.link['bottom']].row][0]+1
+            if b.link['right'] is not '' and self.blocks[b.link['right']].row is not b.row:
+                self.rows_link[self.blocks[b.link['right']].row][0] += 1
+                self.blocks[b.link['right']].top = self.rows_link[self.blocks[b.link['right']].row][0]+1
+
             for v in b.link.keys():
                 if b.link[v] in self.blocks.keys():
                     l = Link(b, self.blocks[b.link[v]], self, attach_beg=v)
                     self.links.append(l)
+
+    def calc_pos(self):
+        y = 0
+        for l,i in enumerate(self.rows_block):
+            x = 0
+            row_width = 0
+            for j,k in enumerate(i):
+                if k :
+                    k.set_pos((x,y), self.column_size[j])
+                    k.calc_attach_pos()
+                    x += self.column_size[j] + 20
+                row_width += x
+            if l+1 < len(self.rows_link):
+                y += (self.rows_link[l][1] + self.rows_link[l+1][0])*10 + 80
+        self.right = sum(self.column_size) + 20*len(self.column_size)
+        for i in self.links:
+            i.calc_points()
 
 
 def print_prgm(prgm):
@@ -461,7 +479,6 @@ class Drawer(object):
         self.svg = ""
 
     def draw(self):
-        print("Drawing")
         self.diagram.right
         blocks = ""
         links = ""
@@ -487,7 +504,6 @@ xmlns:xlink="http://www.w3.org/1999/xlink">
 
 def diagram(str_in):
     d = Diagram(Parser(str_in).parse())
-    print(d.right)
     return Drawer(d).draw()
 
 if __name__ == "__main__":
@@ -497,10 +513,13 @@ op1=>operation: My Operation
 sub1=>subroutine: My Subroutine
 cond=>condition: Yes or No?
 io=>inputoutput: catch something ...
+op2=>operation:test
+op3=>operation:test
 
 st->op1->cond
-cond(yes)->io->e
+cond(yes)->io->e->st
 cond(no)->sub1(right)->op1
+op1(right)->op2(right)->op3->sub1->io(right)->op2
 """
     with open("test.svg", "w") as fic:
         fic.write(diagram(IN))
